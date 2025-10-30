@@ -552,16 +552,16 @@ export default function SensorMap_uPlot(){
   return (
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, padding:16, overflow:"hidden" }}>
       <div>
-        <div style={{ position:'relative', width:670, height:670 }}>
+        <div style={{ position:'relative', width:800, height:800 }}>
           <video
             ref={videoRef}
             src={videoURL || undefined}
             style={{ 
               position:'absolute', 
               inset:0, 
-              width:'calc(100% - 100% / 12)', 
-              height:'calc(100% - 100% / 12)', 
-              objectFit:'cover', 
+              width:'calc(100% - 100% / 10)', 
+              height:'calc(100% - 100% / 10)', 
+              objectFit:'fill', 
               opacity:videoOpacity, 
               borderRadius:12, 
               zIndex:1, 
@@ -580,7 +580,7 @@ export default function SensorMap_uPlot(){
             width={670}
             height={670}
             onClick={pickSensor}
-            style={{ position:'absolute', inset:0, width:670, height:670, background:'#181818', borderRadius:12, zIndex:0 }}
+            style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'#181818', borderRadius:12, zIndex:0 }}
           />
         </div>
 

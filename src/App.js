@@ -3,14 +3,13 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
 /**
- * SensorMap_uPlot.jsx (raw-signal version)
- * - Uses the raw signal without any additional filtering.
- * - Parses metadata columns at the end of CSVs and shows a note describing
- *   the preprocessing filter that produced the file.
- * - Recreates uPlot whenever selectedSensors set changes (series count/labels).
- * - Updates data/range via setData/setScale for window changes.
- * - Canvas map stays on rAF. Chart has 24fps CSS overlay playhead.
- * Install:  npm i uplot
+ * SensorMap_uPlot.jsx (raw-signal version + background video)
+ * - Adds a second input to load a video and layer it **under** the left map (video visible, canvas has transparent background).
+ * - Video playback is kept in sync with the app play/pause & playhead.
+ * - If a video is present, its currentTime drives the playhead; otherwise a 24fps timer does.
+ * - CSV loading behavior from your original remains intact (raw, no extra filtering).
+ *
+ * Install deps:  npm i uplot
  */
 
 // ----------------------------
@@ -84,6 +83,7 @@ export default function SensorMap_uPlot(){
   const [filterNote, setFilterNote] = useState(
     "Awaiting CSV… raw signals shown as-is. Will display filter metadata when available."
   );
+  const [minVal,maxVal]=valueRange; // keep near top so effects can use it safely
 
   // ----- data -----
   const initial=useMemo(()=>mockSignals(200,12),[]);
@@ -92,9 +92,32 @@ export default function SensorMap_uPlot(){
   // Signals = raw (no extra filtering)
   const signals = rawSignals;
 
-  // ----- playhead (24fps) -----
+  // ----- video state -----
+  const videoRef = useRef(null);
+  const [videoURL, setVideoURL] = useState("");
+  const [videoReady, setVideoReady] = useState(false);
+  const [videoDebug, setVideoDebug] = useState({ width: 0, height: 0, readyState: 0, error: '' });
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoOpacity, setVideoOpacity] = useState(0.5); // overlay strength under the map
+
+  // Combined duration used by the scrubber when a video is present
+  const combinedDuration = Math.max(signals?.durationSec || 0, videoDuration || 0);
+
+  // ----- playhead -----
   const [playheadSec,setPlayheadSec]=useState(0);
+
+  // If a video is present/ready, let it drive the playhead via timeupdate.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !videoReady) return;
+    const onTime = () => setPlayheadSec(v.currentTime || 0);
+    v.addEventListener("timeupdate", onTime);
+    return () => v.removeEventListener("timeupdate", onTime);
+  }, [videoReady]);
+
+  // Fallback timer (24fps) only when no video is driving
   useEffect(()=>{ 
+    if(videoReady) return; // video drives the playhead when ready
     if(!isPlaying) return; 
     let mounted=true; 
     const iv=setInterval(()=>{ 
@@ -111,11 +134,36 @@ export default function SensorMap_uPlot(){
       mounted=false; 
       clearInterval(iv); 
     }; 
-  },[isPlaying, signals?.durationSec]);
+  },[isPlaying, signals?.durationSec, videoReady]);
+
+  // Keep playhead in range when data or video changes
   useEffect(()=>{ 
-    const dur=signals?.durationSec??0; 
+    const dur = combinedDuration;
     if(playheadSec>dur) setPlayheadSec(0); 
-  },[signals?.durationSec]);
+  },[signals?.durationSec, videoDuration]);
+
+  // Play/pause should control the video too
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !videoReady) return;
+    if (isPlaying) {
+      // align video clock to playhead then play
+      if (Math.abs((v.currentTime || 0) - playheadSec) > 0.02) v.currentTime = playheadSec;
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
+  }, [isPlaying, playheadSec, videoReady]);
+
+  // When scrubbing, update video position too
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !videoReady) return;
+    // Only seek if we're not actively playing (user scrub or external change)
+    if (!isPlaying && Math.abs((v.currentTime || 0) - playheadSec) > 0.02) {
+      v.currentTime = playheadSec;
+    }
+  }, [playheadSec, isPlaying, videoReady]);
 
   // ----- window bounds -----
   const windowBounds=useMemo(()=>{
@@ -208,11 +256,10 @@ export default function SensorMap_uPlot(){
       cursor: { show: false },
     }, uplotDataAndSeries.data, el);
 
-    
     uplotRef.current = u;
     setPlotWidth(el.clientWidth || 600);
     u.setScale("x", { min: windowBounds.start, max: windowBounds.end });
-    u.setScale('y', { min: minVal, max: maxVal })
+    u.setScale('y', { min: minVal, max: maxVal });
 
     // Resize handling
     const ro = new ResizeObserver(() => {
@@ -228,21 +275,21 @@ export default function SensorMap_uPlot(){
       if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
       if (uplotRef.current) { uplotRef.current.destroy(); uplotRef.current = null; }
     };
-  },[seriesKey]); // <— recreate when selection set changes
+  },[seriesKey, windowBounds.start, windowBounds.end, minVal, maxVal]);
 
-  // Update data & x-range as values/window change (series count same)
+  // Update data & ranges when values/window change (series count same)
   useEffect(()=>{
     const u = uplotRef.current; if(!u) return;
     try {
       u.setData(uplotDataAndSeries.data);
       u.setScale("x", { min: windowBounds.start, max: windowBounds.end });
-      u.setScale('y', { min: minVal, max: maxVal  })
+      u.setScale('y', { min: minVal, max: maxVal });
     } catch (_) {
       // If mismatch happens anyway, next seriesKey change will rebuild.
     }
-  },[uplotDataAndSeries, windowBounds.start, windowBounds.end]);
+  },[uplotDataAndSeries, windowBounds.start, windowBounds.end, minVal, maxVal]);
 
-  // ----- canvas map (unchanged, rAF) -----
+  // ----- canvas map with video background -----
   const canvasRef=useRef(null); const size=670, gridMax=11;
   useEffect(()=>{ 
     let raf; 
@@ -252,22 +299,19 @@ export default function SensorMap_uPlot(){
     if(!ctx) return; 
     canvas.width=size; 
     canvas.height=size; 
-    const [vmin,vmax]=valueRange; 
-    function draw(){ 
-      ctx.clearRect(0,0,size,size); 
+
+    function drawGrid(){
       ctx.strokeStyle="#7c7c7cff"; 
       ctx.lineWidth=1; 
       for(let g=0; g<=gridMax; g++){ 
         const p=(g/gridMax)*size; 
-        ctx.beginPath(); 
-        ctx.moveTo(0,p); 
-        ctx.lineTo(size,p); 
-        ctx.stroke(); 
-        ctx.beginPath(); 
-        ctx.moveTo(p,0); 
-        ctx.lineTo(p,size); 
-        ctx.stroke(); 
-      } 
+        ctx.beginPath(); ctx.moveTo(0,p); ctx.lineTo(size,p); ctx.stroke(); 
+        ctx.beginPath(); ctx.moveTo(p,0); ctx.lineTo(p,size); ctx.stroke(); 
+      }
+    }
+
+    function drawSensors(){
+      const [vmin,vmax]=valueRange; 
       const ts=signals?.timestamps; 
       const N=ts?.length||0; 
       let i=0; 
@@ -276,8 +320,7 @@ export default function SensorMap_uPlot(){
         let lo=0,hi=N; 
         while(lo<hi){ 
           const mid=(lo+hi)>>1; 
-          if(ts[mid]<t) lo=mid+1; 
-          else hi=mid; 
+          if(ts[mid]<t) lo=mid+1; else hi=mid; 
         } 
         i=Math.max(0, Math.min(lo, N-1)); 
       } 
@@ -294,18 +337,22 @@ export default function SensorMap_uPlot(){
         ctx.textAlign="center"; 
         ctx.fillText(s.id, px, py-pointRadius-4); 
         if(selectedSensors.includes(s.id)){ 
-          ctx.beginPath(); 
-          ctx.lineWidth=2; 
-          ctx.strokeStyle="#fff"; 
+          ctx.beginPath(); ctx.lineWidth=2; ctx.strokeStyle="#fff"; 
           ctx.arc(px,py,pointRadius+4,0,Math.PI*2); 
           ctx.stroke(); 
         } 
       } 
-      raf=requestAnimationFrame(draw); 
-    } 
-    raf=requestAnimationFrame(draw); 
+    }
+
+    function frame(){
+      ctx.clearRect(0,0,size,size); 
+            drawGrid();
+      drawSensors();
+      raf=requestAnimationFrame(frame); 
+    }
+    raf=requestAnimationFrame(frame); 
     return ()=> cancelAnimationFrame(raf); 
-  },[signals, playheadSec, valueRange, pointRadius, selectedSensors]);
+  },[signals, playheadSec, valueRange, pointRadius, selectedSensors, videoReady, videoOpacity]);
 
   // --- selection ---
   function toggleSelection(id){ 
@@ -315,17 +362,14 @@ export default function SensorMap_uPlot(){
     const canvas=canvasRef.current; 
     if(!canvas) return; 
     const rect=canvas.getBoundingClientRect(); 
-    const mx=evt.clientX-rect.left, 
-    my=evt.clientY-rect.top; 
+    const mx=evt.clientX-rect.left, my=evt.clientY-rect.top; 
     let bestId=selectedSensors[0], bestD2=Infinity; 
     for(const s of SENSORS){ 
       const px=((s.grid.x+1)/gridMax)*size; 
       const py=((gridMax - s.grid.y - 1)/gridMax)*size; 
       const dx=px-mx, dy=py-my; 
       const d2=dx*dx+dy*dy; 
-      if(d2<bestD2){ 
-        bestD2=d2; bestId=s.id; 
-      } 
+      if(d2<bestD2){ bestD2=d2; bestId=s.id; } 
     } 
     if(bestId) toggleSelection(bestId); 
   }
@@ -383,12 +427,7 @@ export default function SensorMap_uPlot(){
     }
 
     // ---- timestamps (seconds) with unit auto-detection
-    function median(a) {
-      if (!a.length) return 0;
-      const b = a.slice().sort((x,y)=>x-y);
-      const m = b.length >> 1;
-      return b.length % 2 ? b[m] : 0.5*(b[m-1]+b[m]);
-    }
+    function median(a) { if (!a.length) return 0; const b = a.slice().sort((x,y)=>x-y); const m = b.length >> 1; return b.length % 2 ? b[m] : 0.5*(b[m-1]+b[m]); }
 
     let timestamps;
     if (rawT.length >= 2) {
@@ -413,7 +452,7 @@ export default function SensorMap_uPlot(){
     const durationSec = N ? timestamps[N-1] : 0;
     const fs = (N > 1 && durationSec > 0) ? (N - 1) / durationSec : 200;
 
-    // Parse coeff helpers (accept JSON like "[ ... ]" or delimited like "c1;c2;c3")
+    // Parse coeff helpers
     const parseCoeffs = (s) => {
       if (s == null) return null;
       const t = String(s).trim();
@@ -434,7 +473,6 @@ export default function SensorMap_uPlot(){
     const ordNum  = lastOrder !== undefined ? parseInt(String(lastOrder).trim(), 10) : undefined;
     const typeStr = lastType ? String(lastType).trim() : undefined;
 
-    // Compose the note. If type/order match Butterworth order 2, say so explicitly.
     const isButter = (typeStr || "").toLowerCase().includes("butter");
     const isOrder2 = ordNum === 2;
     if (isButter && isOrder2) {
@@ -458,14 +496,107 @@ export default function SensorMap_uPlot(){
     setRawSignals({ byId: byIdRaw, sampleRate: fs, durationSec, timestamps });
     setPlayheadSec(0);
     setIsPlaying(true);
+
+    // If a video exists, also reset it to t=0 to keep alignment
+    if (videoRef.current) {
+      try { videoRef.current.currentTime = 0; } catch {}
+    }
   }
 
+  // --- Video loader ---
+  function onPickVideo(e){
+    const f = e.target.files?.[0];
+    if(!f) return;
+    const url = URL.createObjectURL(f);
+    // cleanup previous
+    if (videoURL) URL.revokeObjectURL(videoURL);
+    setVideoURL(url);
+    setVideoReady(false);
+  }
+
+  // Initialize video element on URL change
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !videoURL) return;
+    const onLoaded = () => {
+      setVideoReady(true);
+      setVideoDuration(Number.isFinite(v.duration) ? v.duration : 0);
+      v.muted = true; // avoid audio surprises
+      v.playsInline = true;
+      v.currentTime = playheadSec || 0;
+      if (isPlaying) v.play().catch(()=>{});
+    };
+    const onEnded = () => {
+      // loop to start to mimic the signal looping
+      v.currentTime = 0;
+      if (isPlaying) v.play().catch(()=>{});
+    };
+    v.addEventListener('loadedmetadata', onLoaded);
+    // debug updater for visibility
+    const onDebug = () => setVideoDebug({ width: v.videoWidth, height: v.videoHeight, readyState: v.readyState, error: v.error?.message || '' });
+    v.addEventListener('loadedmetadata', onDebug);
+    v.addEventListener('error', onDebug);
+    v.addEventListener('ended', onEnded);
+    return () => {
+      v.removeEventListener('loadedmetadata', onLoaded);
+      // remove debug listeners
+      const v2 = videoRef.current; if (v2) { v2.removeEventListener('loadedmetadata', () => {}); v2.removeEventListener('error', () => {}); }
+      v.removeEventListener('ended', onEnded);
+    };
+  }, [videoURL, isPlaying, playheadSec]);
+
+  // Cleanup object URL on unmount
+  useEffect(() => () => { if (videoURL) URL.revokeObjectURL(videoURL); }, [videoURL]);
+
   // ----- Render -----
-  const [minVal,maxVal]=valueRange;
   return (
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, padding:16, overflow:"hidden" }}>
       <div>
-        <canvas ref={canvasRef} width={670} height={670} onClick={pickSensor} style={{ width:670, height:670, background:"#111", borderRadius:12 }} />
+        <div style={{ position:'relative', width:670, height:670 }}>
+          <video
+            ref={videoRef}
+            src={videoURL || undefined}
+            style={{ 
+              position:'absolute', 
+              inset:0, 
+              width:'calc(100% - 100% / 12)', 
+              height:'calc(100% - 100% / 12)', 
+              objectFit:'cover', 
+              opacity:videoOpacity, 
+              borderRadius:12, 
+              zIndex:1, 
+              top: 'calc(100% / 24)', 
+              left: 'calc(100% / 24)' 
+            }}
+            playsInline
+            muted
+            autoPlay
+            loop
+            preload="auto"
+            onError={() => { setVideoReady(false); setVideoDebug(d => ({...d, error: 'decode error'})); }}
+          />
+          <canvas
+            ref={canvasRef}
+            width={670}
+            height={670}
+            onClick={pickSensor}
+            style={{ position:'absolute', inset:0, width:670, height:670, background:'#181818', borderRadius:12, zIndex:0 }}
+          />
+        </div>
+
+        {videoURL && (
+          <div style={{ marginTop:8, fontSize:12, color:'#bbb' }}>
+            Video debug — ready: {String(videoReady)} • size: {videoDebug.width}×{videoDebug.height} • readyState: {videoRef.current?.readyState ?? 0} {videoDebug.error && `• ${videoDebug.error}`}
+          </div>
+        )}
+
+        {videoURL && (
+          <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ fontSize:12, opacity:0.8 }}>Video opacity</span>
+            <input type="range" min={0} max={1} step={0.1} value={videoOpacity} onChange={(e)=> setVideoOpacity(parseFloat(e.target.value)||0)} style={{ width:160 }} />
+            <span style={{ fontSize:12, opacity:0.8 }}>{videoOpacity.toFixed(2)}</span>
+          </div>
+        )}
       </div>
 
       <div>
@@ -501,8 +632,6 @@ export default function SensorMap_uPlot(){
           </label>
         </div>
 
-        {/* Removed Low/High cut controls and fs/Nyquist line since we no longer filter */}
-
         <div style={{ display:'flex', gap:12, alignItems:'center', marginTop:12, flexWrap:'wrap' }}>
           <label style={{ display:'flex', alignItems:'center', gap:8, minWidth:220 }}>
             <span style={{ fontSize:12 }}>Time window (s)</span>
@@ -511,15 +640,30 @@ export default function SensorMap_uPlot(){
           </label>
         </div>
 
-        <div style={{ display:'flex', gap:12, alignItems:'center', margin:8 }}>
-          <input type="file" accept=".csv" onChange={onPickCsv} />
+        <div style={{ display:'flex', gap:12, alignItems:'center', margin:8, flexWrap:'wrap' }}>
+          <div>
+            <div style={{ fontSize:12, marginBottom:4, color:'#bbb' }}>Load raw data (CSV)</div>
+            <input type="file" accept=".csv" onChange={onPickCsv} />
+          </div>
+          <div>
+            <div style={{ fontSize:12, marginBottom:4, color:'#bbb' }}>Load experiment video</div>
+            <input type="file" accept="video/*" onChange={onPickVideo} />
+          </div>
         </div>
 
         <div style={{ display:'flex', alignItems:'center', gap:12, margin:'8px 0' }}>
           <button onClick={()=> setIsPlaying((p)=> !p)} style={{ padding:'6px 10px', borderRadius:8, border:'1px solid #444', background:'#222', color:'#eee' }}>
             {isPlaying? "⏸ Pause": "▶ Play"}
           </button>
-          <input type="range" min={0} max={Math.max(0, (signals?.durationSec??0))} step={0.01} value={Math.min(playheadSec, Math.max(0, (signals?.durationSec??0)))} onChange={(e)=> { setIsPlaying(false); setPlayheadSec(parseFloat(e.target.value)||0); }} style={{ flex:1 }} />
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, combinedDuration)}
+            step={0.01}
+            value={Math.min(playheadSec, Math.max(0, combinedDuration))}
+            onChange={(e)=> { setIsPlaying(false); setPlayheadSec(parseFloat(e.target.value)||0); }}
+            style={{ flex:1 }}
+          />
           <div style={{ width:260, textAlign:'right', color:'#ccc', fontVariantNumeric:'tabular-nums' }}>
             t = {playheadSec.toFixed(3)} s • window [{windowBounds.start.toFixed(2)}–{windowBounds.end.toFixed(2)}] s
           </div>

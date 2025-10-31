@@ -552,7 +552,7 @@ export default function SensorMap_uPlot(){
   return (
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, padding:16, overflow:"hidden" }}>
       <div>
-        <div style={{ position:'relative', width:800, height:800 }}>
+        <div style={{ position:'relative', width:670, height:670 }}>
           <video
             ref={videoRef}
             src={videoURL || undefined}
@@ -564,7 +564,7 @@ export default function SensorMap_uPlot(){
               objectFit:'fill', 
               opacity:videoOpacity, 
               borderRadius:12, 
-              zIndex:1, 
+              zIndex:0, 
               top: 'calc(100% / 24)', 
               left: 'calc(100% / 24)' 
             }}
@@ -580,8 +580,14 @@ export default function SensorMap_uPlot(){
             width={670}
             height={670}
             onClick={pickSensor}
-            style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'#181818', borderRadius:12, zIndex:0 }}
+            style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'transparent', borderRadius:12, zIndex:1 }}
           />
+          <div
+            width={670}
+            height={670}
+            style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'#181818', borderRadius:12, zIndex:-1 }}
+          >
+          </div>
         </div>
 
         {videoURL && (
@@ -597,6 +603,11 @@ export default function SensorMap_uPlot(){
             <span style={{ fontSize:12, opacity:0.8 }}>{videoOpacity.toFixed(2)}</span>
           </div>
         )}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12 }}>Point radius</span>
+          <input type="range" min={4} max={20} value={pointRadius} onChange={(e) => setPointRadius(parseInt(e.target.value))} />
+        </label>
       </div>
 
       <div>
